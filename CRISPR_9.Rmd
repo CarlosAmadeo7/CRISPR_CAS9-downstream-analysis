@@ -1,0 +1,312 @@
+---
+title: "CRISPR_9 analysis from SMB_21 cells from https://pmc.ncbi.nlm.nih.gov/articles/PMC11304869/
+"
+author: "Carlos Alfaro"
+date: "2025-06-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Libraries}
+suppressPackageStartupMessages({
+  library(scater);library(Seurat);library(tidyverse);library(cowplot);library(Matrix.utils);library(edgeR)
+  ;library(dplyr);library(magrittr);library(Matrix);library(purrr);library(reshape2);library(S4Vectors)
+  ;library(tibble);library(SingleCellExperiment);library(pheatmap);library(apeglm);library(png)
+  ;library(DESeq2);library(RColorBrewer);library(clusterProfiler);library(org.Mm.eg.db);library(CellChat);
+  library(patchwork);library(enrichplot);library(STRINGdb);library(org.Hs.eg.db); library(homologene)})
+```
+
+
+```{r Pre-processing}
+# Loading CRISPR-9 counts 
+SMB21_counts<- read.csv("data/CRISPR_screen_counts_SMB21.txt", sep = "\t")
+# Loading matching reference for gene identification
+# Merge count file (with sgRNA barcodes) and the Brie .chip file (which contains barcode → gene mappings), then save the annotated result.
+brie_chip <- read_tsv("CP0044_GRCm38_NCBI_CRISPRko_strict_gene_20221201.chip")
+# Rename columns to prepare for merge
+brie_chip <- brie_chip %>%rename(`Construct.Barcode` = `Barcode Sequence`,Gene = `Gene Symbol`)
+# Merge based on barcode
+annotated_counts <- SMB21_counts %>% left_join(brie_chip, by = "Construct.Barcode")
+#Reorder columns (optional, for clarity)
+annotated_counts <- annotated_counts %>%select(`Construct.Barcode`, `Construct.IDs`, Gene, starts_with("REP"), plasmid)
+# Write to file
+write_tsv(annotated_counts, "annotated_counts_SMB21.tsv")
+```
+
+```{r DAOY counts}
+DAOY_counts<- read.csv("CRISPR_sceen_counts_DAOY.txt", sep = "\t")
+brunello_chip <- read_tsv("CP0043_GRCh38_NCBI_CRISPRko_strict_gene_20240130.chip")
+#Rename columns to prepare for merge
+brunello_chip <- brunello_chip %>%rename(`Construct.Barcode` = `Barcode Sequence`,Gene = `Gene Symbol`)
+# Merge based on barcode
+annotated_counts1 <- DAOY_counts %>%left_join(brunello_chip, by = "Construct.Barcode")
+# Reorder columns (optional, for clarity)
+annotated_counts1 <- annotated_counts1 %>%select(`Construct.Barcode`, `Construct.IDs`, Gene,starts_with("DAOY"))
+# Write to file
+write_tsv(annotated_counts1, "output/annotated_counts_DAOY.tsv")
+```
+
+```{r SMB21 human ortologs}
+# Renaming the column names on the dataframe
+colnames(annotated_counts)
+annotated_counts<- annotated_counts |> dplyr::rename(sgRNA = Construct.Barcode)
+annotated_counts<- annotated_counts |> dplyr::rename(Rep1 = REP.A.SHH.MB , Rep2 = REP.B.SHH.MB, Rep3 = REP.C.SHH.MB )
+annotated_counts<- annotated_counts |> dplyr::rename(gene = Gene)
+annotated_counts<- annotated_counts |> dplyr::select(-Construct.IDs)
+# Saving annotated text 
+annotated_counts[duplicated(annotated_counts$sgRNA),]
+write.table(annotated_counts, "output/annotated_counts_SMB21.txt", sep = "\t", col.names= T, row.names = F)
+# Fixing quotes
+annotated <- read_tsv("annotated_counts_SMB21.txt")
+# Write it again WITHOUT quotes
+write_tsv(annotated, "output/mageck_ready_counts.txt", quote_escape = "none")
+```
+
+```{r Inspecting ouput }
+output_gene<- read.csv("mouse_output.gene_summary.txt", sep = "\t")
+head(output_gene)
+# SAVING SIG GENES ( NEGATUVELY REGULATED)
+write.csv(sig_genes, file ="Sign_genes.csv")
+```
+
+#### Processing of the ouput ########
+###### Loading the non-core essential genes in the results from the cell line and do gene ontology and KEEG analysis #####
+##########################################################################################################################
+```{r}
+# Sig genes will be the essential genes identified as the negatively selected 
+#sig_genes<- output_gene |>
+## Create tmp file that indicates the most negative selected genes and then do Gene ontology 
+## Loading non-core genes 
+non_core_genes <- read.csv("non_essential_mouse_genes.csv")
+tmp2<- non_core_genes |> pull(id)
+GO_analysis <- function(gene_list, condition, status) {
+  base_path<-paste0("GO/", condition, "/", status)
+  if (!dir.exists(base_path)) {dir.create(base_path, recursive = TRUE)}
+  set.seed(0708)
+  GO <- enrichGO(gene = gene_list,OrgDb = "org.Mm.eg.db",keyType = "SYMBOL",ont = "MF",
+    pAdjustMethod = "BH",pvalueCutoff = 0.05, minGSSize = 10,  maxGSSize = 500 )
+  
+  write.csv(as.data.frame(GO), file = paste0(base_path, "/", status, ".MF.GO.csv"))
+  pdf(file = paste0(base_path, "/", status, ".MF.GO.pdf"), width = 10, height = 5, useDingbats = FALSE)
+  print(dotplot(GO, label_format = 100, showCategory = 20) +ggtitle(paste(status, condition, sep = " - ")) +
+      theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold")))
+  dev.off()
+  
+  enrich_sim <- pairwise_termsim(GO)
+  pdf(file = paste0(base_path, "/", status, ".MF.Enrichment.pdf"), width = 9, height = 5, useDingbats = FALSE)
+  print(emapplot(enrich_sim, showCategory = 20) +ggtitle(paste(status, "Enrichment map", condition, sep = " - ")) +
+      theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold")))
+  dev.off()
+  rm(GO, enrich_sim)
+  gc()}
+
+## Running the finction 
+GO_analysis(tmp2, "SMB21", "All")
+```
+
+# Extending the analysis of ubiquitin and check if SSH medulloblastom pathways are related with proteosome.
+```{r}
+tmp2<- genes |> pull(id)
+set.seed(0708)
+GO <- enrichGO(gene = tmp2,OrgDb = "org.Mm.eg.db",keyType = "SYMBOL",ont = "BP",
+    pAdjustMethod = "BH",pvalueCutoff = 0.05,minGSSize = 10, maxGSSize = 500  )
+GO@result[c(362,436),] # 362, 436, 450, 542
+ups_terms <- GO@result %>% filter(grepl("proteasome|ubiquitin|proteasomal", Description, ignore.case = TRUE)) ###proteasome|ubiquitin|smoothened|cilium|proteasomal
+ups_genes <- unlist(strsplit(paste(ups_terms$geneID, collapse = "/"), split = "/"))
+
+## String 
+string_db <- STRINGdb$new(version = "11.5", species = 10090, score_threshold = 400)
+# Combine SHH and UPS genes
+# Map to STRING IDs
+mapped <- string_db$map(data.frame(gene = ups_genes), "gene", removeUnmappedRows = TRUE)
+# Plot interaction network
+pdf("string_tetsing.pdf", width = 10, height = 10)
+string_db$plot_network(mapped$STRING_id)
+invisible(dev.off())
+
+## SHH PATHWAY
+shh_genes_mouse <- c(
+  "Shh",     # Sonic hedgehog
+  "Ptch1",   # Patched 1
+  "Ptch2",   # Patched 2
+  "Smo",     # Smoothened
+  "Gli1",    # GLI family zinc finger 1
+  "Gli2",    # GLI family zinc finger 2
+  "Gli3",    # GLI family zinc finger 3
+  "Sufu",    # Suppressor of fused
+  "Spop",    # Speckle-type POZ protein
+  "Cul3",    # Cullin 3
+  "Skp1a",   # S-phase kinase-associated protein 1A
+  "Skp2",    # S-phase kinase-associated protein 2
+  "Rbx1",    # Ring-box 1
+  "Huwe1",   # HECT, UBA and WWE domain containing 1, E3 ubiquitin protein ligase
+  "Mycn"     # N-Myc proto-oncogene
+)
+
+ups_terms$has_SHH_gene <- sapply(ups_terms$geneID, function(gene_list) {any(strsplit(gene_list, "/")[[1]] %in% shh_genes_mouse)})
+ups_terms_with_shh <- ups_terms %>% filter(has_SHH_gene)
+filtered_terms <- ups_terms %>% filter(has_SHH_gene == TRUE)  
+# Subset the enrichment object (ego_mouse)
+ego_filtered <- GO
+ego_filtered@result <- GO@result %>%filter(ID %in% ups_terms$ID)
+ego_filtered@result <- ego_filtered@result[!duplicated(ego_filtered@result$ID), ]  
+enrich_sim <- pairwise_termsim(ego_filtered)
+emapplot(enrich_sim, showCategory = 200)
+dotplot(ego_filtered)
+cnetplot(ego_filtered)
+## Enrichment 
+#enrich_sim <- pairwise_termsim(ups_terms)
+pdf("tetsing_emmaplot1.pdf", width = 10, height = 10)
+emapplot(enrich_sim, showCategory = 30) + theme(legend.position = "none")
+invisible(dev.off())
+```
+
+```{r KEEG}
+KEGG_analysis_bulk <- function(gene_list, condition, status, output_base = "KEGG/") {
+  ## Create output directory
+  base_path <- file.path(output_base, condition, status)
+  if (!dir.exists(base_path)) {dir.create(base_path, recursive = TRUE)}
+
+  set.seed(0708)
+  # Convert gene symbols to Entrez IDs (human)
+  entrez_ids <- bitr(gene_list, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Mm.eg.db)
+  if (nrow(entrez_ids) == 0) {stop("❌ No valid Entrez IDs found for the input gene symbols.")}
+  entrez_gene_list <- entrez_ids$ENTREZID
+  message("✅ Total Entrez IDs mapped: ", nrow(entrez_ids))
+  # Run KEGG enrichment analysis
+  kegg_results <- enrichKEGG(gene = entrez_gene_list,organism = "mmu",minGSSize = 10,maxGSSize = 500,pvalueCutoff = 0.05)
+  ##Save results
+  write.csv(as.data.frame(kegg_results), file = file.path(base_path, paste0(status, "_KEGG.csv")))
+  ## Dotplot
+  pdf(file = file.path(base_path, paste0(status, "_KEGG_dotplot.pdf")), width = 9, height = 5, useDingbats = FALSE)
+  print(dotplot(kegg_results, label_format = 100, showCategory = 20) +ggtitle(paste(status, condition, sep = " - ")) +
+      theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold")))
+  dev.off()
+  ## Enrichment map
+  enrich_sim <- pairwise_termsim(kegg_results)
+  pdf(file = file.path(base_path, paste0(status, "_KEGG_enrichmentmap.pdf")), width = 9, height = 5, useDingbats = FALSE)
+  print(emapplot(enrich_sim, showCategory = 20) +ggtitle(paste(status, "Enrichment map", condition, sep = " - ")) +
+      theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold")))
+  dev.off()
+  ## Return result for downstream use
+  return(kegg_results)}
+
+kegg_res <- KEGG_analysis_bulk(gene_list = tmp2,condition = "SMB21",status = "All")
+```
+
+```{r KEEG in chosen pathways}
+# Set seed for reproducibility
+set.seed(0708)
+# Convert gene symbols to Entrez IDs (human)
+entrez_ids <- bitr(tmp2, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Mm.eg.db)
+entrez_gene_list <- entrez_ids$ENTREZID
+
+kegg_results <- enrichKEGG(gene = entrez_gene_list,organism = "mmu",  minGSSize = 10,maxGSSize = 500,pvalueCutoff = 0.05)
+
+## Dotplot by fold enrichment ( GeneRatio/ BgRatio)
+# It shows how much more frequent the pathway appears in your gene list vs. random expectation. 
+dotplot(kegg_results, x = "FoldEnrichment", label_format = 100, showCategory = 20) +ggtitle("something") +  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
+
+dotplot(kegg_results, label_format = 100, showCategory = 20) + ggtitle("something") + theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
+
+## Picking significant pathways.
+kegg_df <- kegg_results@result
+selected_paths <- c("Ribosome", "Spliceosome",
+                    "Cell cycle", "Oxidative phosphorylation",
+                    "Ubiquitin mediated proteolysis", "Proteasome",
+                    "Nucleotide excision repair","ATP-dependent chromatin remodeling",
+                    "Neutrophil extracellular trap formation", "DNA replication",
+                    "RNA degradation","mTOR signaling pathway",
+                    "PI3K-Akt signaling pathway", "Cellular senescence",
+                    "Base excision repair","Wnt signaling pathway",
+                    "Protein export","Hedgehog signaling pathway",
+                    "HIF-1 signaling pathway", "cAMP signaling pathway",
+                    "Mismatch repair")
+kegg_subset <- kegg_df %>% filter(Description %in% selected_paths)
+# Make a copy and overwrite the result slot
+filtered_kegg <- kegg_results
+filtered_kegg@result <- kegg_subset
+# Plot
+pdf("KEGG/Maria_plots/Generatio_picked_pathways.pdf", width = 8, height = 6)
+dotplot(filtered_kegg, showCategory = length(selected_paths), label_format = 40) +
+  ggtitle("Input gene coverage") +theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+        axis.text.y = element_text(size = 14), axis.text.x = element_text(size = 14), 
+        axis.title.x = element_text(size = 15), axis.title.y = element_text(size = 14))   
+invisible(dev.off())
+
+pdf("KEGG/Maria_plots/FoldEnrich_picked_pathways.pdf", width = 8, height = 6)
+dotplot(filtered_kegg, x ="FoldEnrichment",showCategory = length(selected_paths),label_format = 40) +
+  ggtitle("Enrichment Score") + theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+          axis.text.y = element_text(size = 14),axis.text.x = element_text(size = 15),
+          axis.title.x = element_text(size = 15),axis.title.y = element_text(size = 14))    
+invisible(dev.off())
+```
+
+
+
+
+
+###### Proteosome activity of the genes by comparing with Reactome#####
+-----------------------------------------------------------------------
+
+```{r}
+### Loading the genes 
+genes<- read.csv("non_essential_mouse_genes.csv", sep = ",")
+#install.packages("msigdbr")
+library(clusterProfiler)
+library(org.Mm.eg.db)     # Use the mouse annotation database
+library(msigdbr)
+library(dplyr)
+
+mageck_genes<- non_core_genes$id
+# Step 1: Convert mouse gene symbols to Entrez IDs
+gene_entrez <- bitr(mageck_genes, 
+                    fromType = "SYMBOL", 
+                    toType = "ENTREZID", 
+                    OrgDb = org.Mm.eg.db)
+# Load MSigDB mouse Reactome gene sets (category C2, subcategory CP:REACTOME)
+msigdb_mouse <- msigdbr(species = "Mus musculus", category = "C2", subcategory = "CP:REACTOME")
+
+# Step 3: Filter for proteasome-related pathways
+msigdb_proteasome <- msigdb_mouse %>%
+  filter(grepl("PROTEASOME", gs_name, ignore.case = TRUE))
+
+# Step 4: Run enrichment
+enrich_res <- enricher(gene = gene_entrez$ENTREZID,
+                       TERM2GENE = msigdb_proteasome[, c("gs_name", "entrez_gene")])
+
+# Optional: View results
+head(enrich_res)
+```
+
+# Removing the core essential genes: Genes required for most cells for basic survival  
+```{r Druggable targets}
+pan_essentials<- read.csv("pan-species-control-essentials-50genes.txt", sep = "\t")
+# Selecting genes that are non-essential 
+sig_genes_non_essential<- sig_genes|>  dplyr::filter(!id %in% pan_essentials$Mouse) 
+## Transforming the non-essential genes into human ortologs
+genes<- sig_genes_non_essential |>pull(id)
+write.csv(sig_genes_non_essential, file = "non_essential_mouse_genes.csv")
+# Map to human orthologs
+orthologs <- homologene(genes, inTax = 10090, outTax = 9606) 
+human_genes <- unique(orthologs$`9606`)
+genes_clean <- as.character(human_genes)
+genes_clean <- genes_clean[!is.na(genes_clean) & genes_clean != ""]
+### Loading interactions.tsv 
+interatcions<- read.csv("interactions.tsv", header = T, sep = "\t")
+```
+
+```{r}
+Interactions_genes<- genes_clean %in% interatcions$gene_name
+results<-interatcions[Interactions_genes,]
+length(unique(results$gene_name))
+results1<- results|> filter(approved == "TRUE")
+length(unique(results1$gene_name))
+```
+
+```{r r session-info}
+sessioninfo::session_info()
+```
